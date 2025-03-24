@@ -15,15 +15,19 @@ import {
   useMediaQuery,
   Alert,
   Snackbar,
-  InputAdornment
+  InputAdornment,
+  Tooltip
 } from '@mui/material';
 import SendIcon from '@mui/icons-material/Send';
 import FileCopyIcon from '@mui/icons-material/FileCopy';
 import ForumIcon from '@mui/icons-material/Forum';
 import CloseIcon from '@mui/icons-material/Close';
+import NotificationsIcon from '@mui/icons-material/Notifications';
 import { useIPFSServiceWorker } from '../../components/IPFSServiceWorkerProvider';
 import { IPFSMessage } from '../../utils/ipfs';
 import { v4 as uuidv4 } from 'uuid';
+import EventLogSidebar from '../../components/EventLogSidebar';
+import { useEventLog } from '../../store/eventLogStore';
 
 // Sidebar width
 const SIDEBAR_WIDTH = 300;
@@ -77,12 +81,22 @@ function Page2() {
   const [currentChat, setCurrentChat] = useState<Chat | null>(null);
   const [chats, setChats] = useState<Chat[]>([]);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [eventLogOpen, setEventLogOpen] = useState(false);
   const messageEndRef = useRef<null | HTMLDivElement>(null);
   const { isReady, peerId, connectionStatus, subscribe, unsubscribe, publish, addMessageHandler, removeMessageHandler } = useIPFSServiceWorker();
   const [messageIds, setMessageIds] = useState<string[]>([]);
   const [messages, setMessages] = useState<IPFSMessage[]>([]);
   const [notification, setNotification] = useState({ open: false, message: '' });
   const [subscribedTopics, setSubscribedTopics] = useState<string[]>([]);
+  
+  // EventLog store
+  const { 
+    addMessageEvent, 
+    addSubscriptionEvent, 
+    addConnectionEvent, 
+    addErrorEvent,
+    trackTopic
+  } = useEventLog();
   
   // Get the current wallet address as our ID
   const currentUserId = typeof window !== 'undefined' ? localStorage.getItem('walletAddress') : null;
@@ -113,6 +127,9 @@ function Page2() {
       console.log('IPFS is ready in chat component');
       // When IPFS is ready, set connected to true
       setConnected(true);
+      
+      // Event log: Connection event
+      addConnectionEvent('connected', `Connected with peer ID: ${peerId}`);
       
       // Load chats from localStorage
       const savedChats = localStorage.getItem('ipfs_chats');
@@ -190,6 +207,9 @@ function Page2() {
         
         // Space topic'e abone ol
         subscribeToSpaceTopic();
+        
+        // Space chat için topic bilgisini ekle
+        trackTopic(SPACE_TOPIC_ID, "Space Chat", true);
       } else {
         console.warn('No currentUserId available for subscription');
       }
@@ -209,11 +229,15 @@ function Page2() {
       const success = subscribe(currentUserId);
       
       if (success) {
-        console.log(`Subscribed to personal topic: ${currentUserId}`);
+        console.log(`%c✅ Subscribed to personal topic: ${currentUserId}`, 'background: green; color: white; font-weight: bold;');
         setNotification({ 
           open: true, 
           message: 'Listening for messages on your personal topic' 
         });
+        
+        // EventLog: Subscription event
+        addSubscriptionEvent(currentUserId, true);
+        trackTopic(currentUserId, "Personal Topic", false);
         
         // Yeni topic'i dinlemek için mesaj handler'ı ekle
         addMessageHandler(currentUserId, handleIncomingMessage);
@@ -225,6 +249,8 @@ function Page2() {
         });
       } else {
         console.error('Failed to subscribe to personal topic.');
+        // EventLog: Error event
+        addErrorEvent('Failed to subscribe to personal topic.');
       }
     } catch (error) {
       console.error('Error subscribing to personal topic:', error);
@@ -235,6 +261,9 @@ function Page2() {
           subscribeToPersonalTopic();
         }
       }, 5000);
+      
+      // EventLog: Error event
+      addErrorEvent('Error subscribing to personal topic', error);
     }
   };
   
@@ -277,6 +306,10 @@ function Page2() {
         const success = subscribe(participantId);
         
         if (success) {
+          // EventLog: Subscription event
+          addSubscriptionEvent(participantId, true);
+          trackTopic(participantId, `Chat with ${participantId.substring(0, 8)}`, false);
+          
           // Add to subscribed topics
           setSubscribedTopics(prev => {
             if (prev.includes(participantId)) return prev;
@@ -293,12 +326,17 @@ function Page2() {
           });
         } else {
           console.error(`Failed to subscribe to ${participantId}'s topic`);
+          // EventLog: Error event
+          addErrorEvent(`Failed to subscribe to ${participantId}'s topic`);
         }
       } else {
         console.log(`Already subscribed to ${participantId}'s topic`);
       }
     } catch (error) {
       console.error(`Failed to subscribe to ${participantId}'s topic:`, error);
+      
+      // EventLog: Error event
+      addErrorEvent(`Failed to subscribe to ${participantId}'s topic`, error);
       
       // Try again after a delay
       setTimeout(() => {
@@ -326,6 +364,10 @@ function Page2() {
       if (success) {
         console.log(`Subscribed to space topic: ${SPACE_TOPIC_ID}`);
         
+        // EventLog: Subscription event
+        addSubscriptionEvent(SPACE_TOPIC_ID, true);
+        trackTopic(SPACE_TOPIC_ID, "Space Chat", true);
+        
         // Mesaj handler'ı ekle
         addMessageHandler(SPACE_TOPIC_ID, handleIncomingMessage);
         
@@ -336,9 +378,14 @@ function Page2() {
         });
       } else {
         console.error('Failed to subscribe to space topic.');
+        // EventLog: Error event
+        addErrorEvent('Failed to subscribe to space topic.');
       }
     } catch (error) {
       console.error('Error subscribing to space topic:', error);
+      // EventLog: Error event
+      addErrorEvent('Error subscribing to space topic', error);
+      
       // Try to resubscribe after a delay
       setTimeout(() => {
         if (isReady && peerId) {
@@ -351,6 +398,7 @@ function Page2() {
 
   // Handle incoming message from pubsub
   const handleIncomingMessage = (incomingMessage: IPFSMessage) => {
+    console.log('%c📨 INCOMING MESSAGE:', 'background: #2196f3; color: white; font-weight: bold;', incomingMessage);
     debugMessage('Received message via pubsub:', incomingMessage);
     
     // Ignore heartbeat and announcement messages
@@ -365,37 +413,50 @@ function Page2() {
       return;
     }
     
-    // Check if this is a Space message
-    const isSpaceMessage = incomingMessage.to === SPACE_TOPIC_ID;
+    // PUBSUB SİSTEMİNDEKİ ALAN ANLAMLARI:
+    // - from: Mesajı gönderen kişinin ID'si
+    // - to: Mesajın gönderildiği topic ID (alıcının ID'si veya SPACE_TOPIC_ID)
+    // - Bir topic'e gönderilen mesajı o topic'e abone olan herkes alır
     
-    // Process the message if:
-    // 1. We are the sender (our own messages)
-    // 2. We are the recipient (messages sent to us)
-    // 3. It's a Space message (public)
+    // Bu mesaj hangi topic'ten geldi?
+    const messageTopic = incomingMessage.to; // to alanı mesajın hangi topic'e gönderildiğini belirtir
+    const isSpaceMessage = messageTopic === SPACE_TOPIC_ID;
     
-    // Determine if this message is relevant to the current user
+    // Mesaj ilgili mi?
+    // 1. Space mesajı ise her zaman ilgilidir
+    // 2. Bizim topic'imize geldiyse ilgilidir (bize gönderilmiş)
+    // 3. Başka birinin topic'inden gelmiş ama bizim gönderdiğimiz bir mesaj ise ilgilidir
     const isFromCurrentUser = incomingMessage.from === currentUserId;
-    const isToCurrentUser = incomingMessage.to === currentUserId;
+    const isToCurrentUser = messageTopic === currentUserId;
     
     // Log message details for debugging
-    debugMessage('Message details:', {
+    console.log('%c🔍 MESSAGE DETAILS:', 'background: #ff9800; color: white; font-weight: bold;', {
       from: incomingMessage.from,
+      to: messageTopic,
       currentUserId,
       isFromCurrentUser,
       isToCurrentUser,
       isSpaceMessage,
+      subscribedTopics,
       content: incomingMessage.content.substring(0, 30)
     });
     
-    // If it's neither from us, to us, nor a Space message, ignore
+    // İlgili değilse yoksay
     if (!isFromCurrentUser && !isToCurrentUser && !isSpaceMessage) {
       debugMessage('Message not related to current user or Space, ignoring');
       return;
     }
     
-    debugMessage('Processing real chat message:', 
+    console.log('%c✅ PROCESSING MESSAGE:', 'background: green; color: white; font-weight: bold;', 
       isSpaceMessage ? 'Space message' : 
       isFromCurrentUser ? 'sent by us' : 'sent to us');
+    
+    // EventLog: Message event
+    // topicId, from, to, messageId parametreleri:
+    // - topicId: Mesajın gönderildiği/alındığı topic'in ID'si (genellikle 'to' ile aynı)
+    // - from: Mesajı gönderen kullanıcının ID'si
+    // - to: Mesajın hedef topic'i
+    addMessageEvent(messageTopic, incomingMessage.from, incomingMessage.to, incomingMessage.id);
     
     // Add message to our messages array if it's not already there
     setMessages(prevMessages => {
@@ -657,29 +718,45 @@ function Page2() {
       // Check if this is a Space message
       const isSpaceMessage = currentChat.id === SPACE_CHAT_ID;
       
-      // Get the other participant's ID (or Space topic ID for Space chat)
-      const otherParticipant = isSpaceMessage 
+      // Mesajın gönderileceği topic
+      // PUBSUB SİSTEMİNDE:
+      // - Space mesajları için: SPACE_TOPIC_ID topic'ine gönderilir
+      // - Özel mesajlar için: Alıcının ID'si (onun topic'i) kullanılır
+      const targetTopic = isSpaceMessage 
         ? SPACE_TOPIC_ID 
         : currentChat.participants.find(p => p !== currentUserId);
         
-      if (!otherParticipant) {
-        throw new Error('Could not find recipient ID in current chat');
+      if (!targetTopic) {
+        throw new Error('Could not find target topic ID in current chat');
       }
+      
+      console.log('%c📤 SENDING MESSAGE TO:', 'background: #673ab7; color: white; font-weight: bold;', {
+        targetTopic,
+        isSpaceMessage,
+        currentChat
+      });
       
       // Generate a unique message ID
       const messageId = uuidv4();
       
       // Create message object
+      // PUBSUB MESAJ YAPISI:
+      // - id: Mesajın benzersiz ID'si
+      // - from: Mesajı gönderen kişinin ID'si (bizim ID'miz)
+      // - to: Mesajın gönderildiği topic ID (alıcının ID'si veya SPACE_TOPIC_ID)
+      // - content: Mesaj içeriği
+      // - timestamp: Mesaj zamanı
+      // - type: Mesaj tipi
       const ipfsMessage: IPFSMessage = {
         id: messageId,
         from: currentUserId || 'unknown',
-        to: otherParticipant,
+        to: targetTopic, // Topic ID'si - mesajın gönderileceği topic
         content: message,
         timestamp: Date.now(),
         type: 'chat' // Explicitly set type as chat message
       };
       
-      debugMessage(`Sending message to ${isSpaceMessage ? 'Space' : otherParticipant}`, ipfsMessage);
+      debugMessage(`Sending message to topic: ${targetTopic}`, ipfsMessage);
       
       // Check if we already have this message (by content) to prevent duplicates
       const isDuplicate = messages.some(msg => 
@@ -697,7 +774,6 @@ function Page2() {
       }
       
       // Store message in IPFS (for persistence) BEFORE updating the local state
-      // This is important as it ensures the message is stored and pinned first
       try {
         // ServiceWorker API üzerinden mesajı sakla
         const messageString = JSON.stringify(ipfsMessage);
@@ -718,10 +794,10 @@ function Page2() {
         // Continue anyway to try publishing it
       }
       
-      // For direct messages, make sure we're subscribed to the recipient's topic for replies
-      if (!isSpaceMessage && !subscribedTopics.includes(otherParticipant)) {
-        debugMessage(`Not subscribed to ${otherParticipant}'s topic yet, subscribing now...`);
-        await subscribeToChatTopic(otherParticipant);
+      // Direct messages için, karşı tarafın topic'ine abone olduğumuzdan emin olalım
+      if (!isSpaceMessage && !subscribedTopics.includes(targetTopic)) {
+        debugMessage(`Not subscribed to ${targetTopic} topic yet, subscribing now...`);
+        await subscribeToChatTopic(targetTopic);
       }
       
       // Now update messages in the UI to provide instant feedback
@@ -729,27 +805,35 @@ function Page2() {
         new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
       ));
       
-      // Publish message to the appropriate topic
+      // Publish message to the target topic
       let publishSuccess = false;
       
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          // Send to recipient's topic using ServiceWorker publish API
-          debugMessage(`Publishing message attempt ${attempt + 1}/3 to ${isSpaceMessage ? 'Space topic' : otherParticipant + "'s topic"}`);
+          // Mesajı doğrudan hedef topic'e yayınla
+          console.log(`%c📡 Publishing attempt ${attempt + 1}/3 to topic: ${targetTopic}`, 'background: #2196f3; color: white;');
           const messageString = JSON.stringify(ipfsMessage);
           
-          // ServiceWorker API üzerinden yayınla
-          if (isSpaceMessage) {
-            publish(SPACE_TOPIC_ID, messageString);
-          } else {
-            publish(otherParticipant, messageString);
-          }
+          // ServiceWorker API üzerinden mesajı yayınla
+          publish(targetTopic, messageString);
+          
+          // EventLog: Message event (Outgoing message)
+          // topicId, from, to, messageId parametreleri:
+          // - topicId: Mesajın gönderildiği topic'in ID'si (genellikle 'to' ile aynı)
+          // - from: Mesajı gönderen kullanıcının ID'si (bizim ID'miz)
+          // - to: Mesajın hedef topic'i (alıcının ID'si veya SPACE_TOPIC_ID)
+          addMessageEvent(targetTopic, ipfsMessage.from, ipfsMessage.to, ipfsMessage.id);
           
           publishSuccess = true;
-          debugMessage(`Message published successfully to ${isSpaceMessage ? 'Space topic' : otherParticipant + "'s topic"}`);
+          debugMessage(`Message published successfully to topic: ${targetTopic}`);
           break; // Exit the loop on success
         } catch (err) {
-          console.error(`Failed to publish to ${isSpaceMessage ? 'Space topic' : 'recipient\'s topic ' + otherParticipant} (attempt ${attempt + 1}/3):`, err);
+          console.error(`Failed to publish to topic ${targetTopic} (attempt ${attempt + 1}/3):`, err);
+          
+          // EventLog: Error event
+          if (attempt === 2) { // Sadece son deneme başarısız olduğunda log'a ekle
+            addErrorEvent(`Failed to publish message to topic ${targetTopic}`, err);
+          }
           
           if (attempt < 2) {
             // Wait with exponential backoff before retrying
@@ -761,7 +845,7 @@ function Page2() {
       }
       
       if (!publishSuccess) {
-        console.warn(`Message stored in IPFS but could not be published via pubsub to ${isSpaceMessage ? 'Space' : otherParticipant}`);
+        console.warn(`Message stored in IPFS but could not be published to topic: ${targetTopic}`);
         setNotification({
           open: true,
           message: `Message saved but delivery to ${isSpaceMessage ? 'Space' : 'recipient'} not confirmed.`
@@ -770,7 +854,7 @@ function Page2() {
         // If published successfully, show confirmation
         setNotification({
           open: true,
-          message: `Message sent successfully to ${isSpaceMessage ? 'Space' : truncateAddress(otherParticipant)}`
+          message: `Message sent successfully to ${isSpaceMessage ? 'Space' : truncateAddress(targetTopic)}`
         });
       }
       
@@ -789,9 +873,6 @@ function Page2() {
           chat.id === currentChat.id ? updatedChat : chat
         );
         setChats(updatedChats);
-        
-        // ÖNEMLİ: Space chat sohbeti resetlenmemesi için burayı düzeltiyoruz
-        // Mevcut sohbeti doğrudan güncelleyelim ama değiştirmeyelim
         setCurrentChat(updatedChat);
         
         // Save to localStorage
@@ -803,6 +884,8 @@ function Page2() {
       debugMessage('Message sending process completed');
     } catch (error) {
       console.error('Error sending message:', error);
+      // EventLog: Error event
+      addErrorEvent('Error sending message', error);
       setNotification({
         open: true,
         message: 'Failed to send message. Please try again.'
@@ -935,7 +1018,9 @@ function Page2() {
     return messages.filter(msg => {
       // Include messages between the current user and the other participant
       return (
+        // Bizden diğer kullanıcının topic'ine gönderilen mesajlar
         (msg.from === currentUserId && msg.to === otherParticipant) ||
+        // Diğer kullanıcıdan bizim topic'imize gelen mesajlar
         (msg.from === otherParticipant && msg.to === currentUserId)
       );
     }).sort((a, b) => a.timestamp - b.timestamp);
@@ -1099,6 +1184,9 @@ function Page2() {
   useEffect(() => {
     setConnected(connectionStatus === 'connected');
     
+    // EventLog: Connection event
+    addConnectionEvent(connectionStatus, `Connection status changed to ${connectionStatus}`);
+    
     // Show connection status changes to the user
     if (connectionStatus === 'connected') {
       setNotification({
@@ -1193,6 +1281,17 @@ function Page2() {
               sx={{ ml: 2 }} 
             />
           )}
+          
+          {/* EventLog toggle button */}
+          <Tooltip title="Show/Hide Event Log">
+            <IconButton 
+              color={eventLogOpen ? "primary" : "default"}
+              onClick={() => setEventLogOpen(!eventLogOpen)}
+              sx={{ ml: 'auto' }}
+            >
+              <NotificationsIcon />
+            </IconButton>
+          </Tooltip>
           
           {subscribedTopics.length > 0 && currentChat && (
             <Box sx={{ mt: 1, display: 'flex', flexWrap: 'wrap', gap: 1, width: '100%' }}>
@@ -1313,34 +1412,7 @@ function Page2() {
         </Box>
         
         {/* Message input area */}
-        <Box position="fixed" bottom={0} left={SIDEBAR_WIDTH} right={0} zIndex={1000} px={2} py={1} bgcolor="background.paper" borderTop={`1px solid ${theme.palette.divider}`}>
-          <Box sx={{ display: 'flex', alignItems: 'center' }}>
-            {currentChat && (
-              <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
-                <Typography variant="subtitle2" sx={{ mr: 1 }}>
-                  {currentChat.id === SPACE_CHAT_ID ? (
-                    <Box sx={{ display: 'flex', alignItems: 'center' }}>
-                      <Typography color="primary" fontWeight="bold">
-                        Space Chat
-                      </Typography>
-                      <Chip 
-                        label="Public" 
-                        size="small" 
-                        color="success" 
-                        variant="outlined"
-                        sx={{ ml: 1, height: '18px', fontSize: '0.6rem' }}
-                      />
-                      <Typography variant="caption" color="text.secondary" sx={{ ml: 1 }}>
-                        (visible to all users)
-                      </Typography>
-                    </Box>
-                  ) : (
-                    <>To: {getRecipientAddress(currentChat)}</>
-                  )}
-                </Typography>
-              </Box>
-            )}
-          </Box>
+        <Box position="sticky" bottom={0} sx={{ opacity: !currentChat ? 0 : 1 }} left={SIDEBAR_WIDTH} right={0} zIndex={1000} px={2} py={1} bgcolor="background.paper" borderTop={`1px solid ${theme.palette.divider}`}>
           <form onSubmit={handleSendMessage}>
             <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
               <TextField
@@ -1368,6 +1440,12 @@ function Page2() {
           </form>
         </Box>
       </Box>
+      
+      {/* Event Log Sidebar */}
+      <EventLogSidebar 
+        open={eventLogOpen} 
+        onClose={() => setEventLogOpen(false)}
+      />
       
       {/* Notification snackbar */}
       <Snackbar

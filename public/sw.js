@@ -56,7 +56,7 @@ self.addEventListener('message', (event) => {
   switch (data.action) {
     case 'init':
       // Main thread'e hazır olduğunu bildir
-      broadcastIPFSReady("fake-peer-id-for-now");
+      broadcastIPFSReady("me");
       break;
       
     case 'subscribe':
