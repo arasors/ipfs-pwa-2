@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import { v4 as uuidv4 } from 'uuid';
-import { Notification, NotificationType, NotificationPreferences, DefaultNotificationPreferences } from '@/models/Notification';
+import { Notification, NotificationType, NotificationPreferences, DefaultNotificationPreferences } from '../models/Notification';
 
 interface NotificationState {
   // State

@@ -1,8 +1,3 @@
-import AddTaskIcon from '@mui/icons-material/AddTask';
-import BugReportIcon from '@mui/icons-material/BugReport';
-import GitHubIcon from '@mui/icons-material/GitHub';
-import HomeIcon from '@mui/icons-material/Home';
-import TerrainIcon from '@mui/icons-material/Terrain';
 import { Home, List, Mail, User, Settings, Rows2 } from "lucide-react";
 
 import asyncComponentLoader from '@/utils/loader';

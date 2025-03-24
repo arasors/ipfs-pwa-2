@@ -24,6 +24,15 @@ export default defineConfig({
         'os',
         'path',
         'process',
+        'child_process',
+        'fs',
+        'net',
+        'dns',
+        'tls',
+        'http2',
+        'zlib',
+        'url',
+        'stream'
       ],
       globals: {
         Buffer: true,
