@@ -104,7 +104,7 @@ export const useEventLog = create<EventLogState>()(
         get().addParticipantToTopic(topicId, from);
         
         // Log mesajı oluştur
-        const logMessage = `Message ${messageId.substring(0, 8)} | From: ${from.substring(0, 8)} | To Topic: ${topicId.substring(0, 8)}`;
+        const logMessage = `Message ${messageId.substring(0, 8)} | From: ${from.slice(45)} | To Topic: ${topicId.slice(45)}`;
         
         // Log'a ekle
         const entryId = get().addLogEntry('message', logMessage, {
